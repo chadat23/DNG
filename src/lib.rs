@@ -5,13 +5,73 @@ use std::path::PathBuf;
 use jpeg;
 mod dng_utils;
 mod tags;
+mod get_value;
+mod trial;
+
+// See TIFF6.0 P15/16
+enum EntryData {
+    Single(DataType),
+    Multiple(Vec<DataType>),
+}
+
+impl EntryData {
+    fn to_vec(&self) -> Vec<DataType> {
+        use EntryData::*;
+        let c = match self {
+            Single(v) => {
+                Vec::from([*v])
+            },
+            Multiple(v) => {
+                v.to_owned()
+            }
+        };
+        c
+    }
+}
+
+// // See TIFF6.0 P15/16
+#[derive(Clone, Copy)]
+enum DataType {
+    Other(u8),
+    Byte(u8),
+    Ascii(u8),
+    Short(u16),
+    Long(u32),
+    Rational([u32; 2]),
+    Sbyte(i8),
+    Undefined(u8),
+    Sshort(i16),
+    Slong(i32),
+    Srational([i32; 2]),
+    Float(f32),
+    Double(f64),
+}
+
+impl DataType {
+    fn to_u32(&self) -> u32{
+        use DataType::*;
+        match self {
+            Byte(u) | Ascii(u) | Undefined(u) => *u as u32,
+            // Ascii(u) => *u as u32,
+            Short(u) => *u as u32,
+            Long(u) => *u as u32,
+            Sbyte(i) => *i as u32,
+            // Undefined(u) => *u as u32,
+            Sshort(i) => *i as u32,
+            Slong(i) => *i as u32,
+            Float(f) => *f as u32,
+            Double(f) => *f as u32,
+            _ => panic!("This type can't be cast to a u32!")
+        }
+    }
+}
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Endedness {
+enum Endian {
     Big,
     Little,
 }
@@ -24,18 +84,18 @@ enum WordSize {
 
 // See TIFF6, Section 2, Image File Header
 struct ImageFileHeader {
-    endedness: Endedness,
+    endian: Endian,
     word_size: WordSize,
     ifd_offset: usize,
 }
 
 impl ImageFileHeader {
     fn parse_image_header(encoded_image: &Vec<u8>) -> Self {
-        let endedness = dng_utils::get_endedness(encoded_image);
+        let endian = dng_utils::get_endian(encoded_image);
         Self { 
-            endedness: endedness.clone(),
-            word_size: dng_utils::get_word_size(encoded_image), 
-            ifd_offset: dng_utils::get_u32_at_idx(encoded_image, 4, &endedness) as usize
+            endian: endian.clone(),
+            word_size: dng_utils::get_word_size(encoded_image, &endian), 
+            ifd_offset: get_value::long(encoded_image, 4, &endian) as usize
         }
     }    
 }
@@ -46,25 +106,9 @@ struct IFD {
     next_ifd_offset: usize,
 }
 
-// See TIFF6.0 P15/16
-enum EntryType {
-    Byte = 1,
-    Ascii = 2,
-    Short = 3,
-    Long = 4,
-    Rational = 5,
-    Sbyte = 6,
-    Undefined = 7,
-    Sshort = 8,
-    Slong = 9,
-    Srational = 10,
-    Float = 11,
-    Double = 12,
-}
-
 struct DirectoryEntry {
     tag: u16,
-    entry_type: u16,
+    data_type: u16,
     count: usize,
     value_or_offset: u32
 }
@@ -104,7 +148,7 @@ mod tests {
 
         let dng = DNG::open(path);
 
-        assert_eq!(dng.image_file_header.endedness, Endedness::Little);
+        assert_eq!(dng.image_file_header.endian, Endian::Little);
         assert_eq!(dng.image_file_header.word_size, WordSize::Thirtytwo);
         assert_eq!(dng.image_file_header.ifd_offset, 8);
     }
