@@ -8,6 +8,8 @@ mod tags;
 mod get_value;
 mod trial;
 
+use tags::Tag;
+
 // See TIFF6.0 P15/16
 enum EntryData {
     Single(DataType),
@@ -52,11 +54,9 @@ impl DataType {
         use DataType::*;
         match self {
             Byte(u) | Ascii(u) | Undefined(u) => *u as u32,
-            // Ascii(u) => *u as u32,
             Short(u) => *u as u32,
             Long(u) => *u as u32,
             Sbyte(i) => *i as u32,
-            // Undefined(u) => *u as u32,
             Sshort(i) => *i as u32,
             Slong(i) => *i as u32,
             Float(f) => *f as u32,
@@ -64,10 +64,40 @@ impl DataType {
             _ => panic!("This type can't be cast to a u32!")
         }
     }
-}
 
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
+    fn to_usize(&self) -> usize{
+        use DataType::*;
+        match self {
+            Byte(u) | Ascii(u) | Undefined(u) => *u as usize,
+            Short(u) => *u as usize,
+            Long(u) => *u as usize,
+            Sbyte(i) => *i as usize,
+            Sshort(i) => *i as usize,
+            Slong(i) => *i as usize,
+            Float(f) => *f as usize,
+            Double(f) => *f as usize,
+            _ => panic!("This type can't be cast to a u32!")
+        }
+    }
+
+    fn get_entry_value(buffer: &Vec<u8>, data_type: u16, offset: usize, endian: &Endian) -> Self {
+        use DataType::*;
+        match data_type {
+            1 => Byte(get_value::byte(buffer, offset)),
+            2 => Ascii(get_value::ascii(buffer, offset)),
+            3 => Short(get_value::short(buffer, offset, endian)),
+            4 => Long(get_value::long(buffer, offset, endian)),
+            5 => Rational(get_value::rational(buffer, offset, endian)),
+            6 => Sbyte(get_value::sbyte(buffer, offset)),
+            7 => Undefined(get_value::undefined(buffer, offset)),
+            8 => Sshort(get_value::sshort(buffer, offset, endian)),
+            9 => Slong(get_value::slong(buffer, offset, endian)),
+            10 => Srational(get_value::rsational(buffer, offset, endian)),
+            11 => Float(get_value::float(buffer, offset, endian)),
+            12 => Double(get_value::double(buffer, offset, endian)),
+            _ => panic!("That datatype doesn't make sense!")
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -100,10 +130,79 @@ impl ImageFileHeader {
     }    
 }
 
+struct IFDs {
+    ifds: HashMap<usize, IFD>,
+    thumbnail: Option<usize>,
+    raw_image: Option<usize>,
+}
+
+impl IFDs {
+    fn parse_ifds(buffer: &Vec<u8>, image_file_header: &ImageFileHeader) -> Self {
+        let mut offset = image_file_header.ifd_offset;
+        let mut ifd = HashMap::new();
+        ifd.insert(image_file_header.ifd_offset, IFD::parse_ifd(buffer, image_file_header.ifd_offset, &image_file_header.endian));
+        let mut ifds = Self { 
+            ifds: ifd,
+            thumbnail: None,
+            raw_image: None 
+        };
+        ifds.insert_subifds(buffer, &image_file_header.endian);
+    
+        ifds
+    }
+
+    fn insert_subifds(&mut self, buffer: &Vec<u8>, endian: &Endian) {
+        let mut new_ifds = IFDs { ifds: HashMap::new() , thumbnail: None, raw_image: None };
+        for ifd in self.ifds.values() {
+            if let Some(entry) = ifd.entries.get(&(Tag::SubIFD as u16)) {
+                let ifd_offsets = entry.get_entry_values(buffer, endian);
+                let mut sub_ifds = HashMap::new();
+                for offset in ifd_offsets.to_vec().iter().map(|f| f.to_usize()) {
+                    sub_ifds.insert(offset, IFD::parse_ifd(buffer, offset, &endian));
+                }
+                let mut ifds = Self { 
+                    ifds: sub_ifds,
+                    thumbnail: None,
+                    raw_image: None 
+                };
+                ifds.insert_subifds(buffer, endian);
+                new_ifds.extend(ifds);
+            }
+        }
+        self.extend(new_ifds);
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.ifds.extend(other.ifds);
+    }
+}
+
 struct IFD {
+    offset: usize,
     numb_of_entries: u16,
     entries: HashMap<u16, DirectoryEntry>, // note that the hashmap doesn't maintain the entry order, see TIFF6.0 P15
-    next_ifd_offset: usize,
+    // next_ifd_offset: usize, // this isn't used / allowed in DNG, only in TIFFs
+}
+
+impl IFD {
+    fn parse_ifd(buffer: &Vec<u8>, offset: usize, endian: &Endian) -> Self {
+        let entry_count = get_value::short(buffer, offset, endian) as usize;    
+        let mut entries = HashMap::new();
+        for i in 0..entry_count {
+            let tag = get_value::short(buffer, offset + 2 + i * 12, endian);
+            let data_type = get_value::short(buffer, offset + 4 + i * 12, endian);
+            let count = get_value::long(buffer, offset + 6 + i * 12, endian) as usize;
+            let value_or_offset = get_value::long(buffer, offset + 10 + i * 12, endian);
+    
+            entries.insert(tag.clone(), DirectoryEntry { tag, data_type: data_type, count, value_or_offset });
+        }
+        Self {
+            offset,
+            numb_of_entries: entry_count as u16,
+            entries,
+            // next_ifd_offset: get_value::long(buffer, offset + 2 + entry_count * 12, endian) as usize,
+        }
+    }
 }
 
 struct DirectoryEntry {
@@ -113,9 +212,39 @@ struct DirectoryEntry {
     value_or_offset: u32
 }
 
+impl DirectoryEntry {
+    fn get_entry_values(&self, buffer: &Vec<u8>, endian: &Endian) -> EntryData {
+        let bytes_per_value = dng_utils::get_bytes_per_value_for_type(self.data_type) as usize;
+        let total_used_bytes = bytes_per_value * self.count;
+        match self.count {
+            count if count > 1 => {
+                let mut multiple = Vec::with_capacity(self.count);
+                if total_used_bytes <= 4 {
+                    for i in 0..self.count {
+                        multiple.push(DataType::get_entry_value(&self.value_or_offset.to_be_bytes().to_vec(), self.data_type, i * bytes_per_value, endian));
+                    }
+                } else {
+                    for i in 0..self.count {
+                        multiple.push(DataType::get_entry_value(buffer, self.data_type, self.value_or_offset as usize + i * bytes_per_value, endian));
+                    }
+                }
+                EntryData::Multiple(multiple)
+            },
+            _ => {
+                let buffer = if total_used_bytes <= 4 {
+                    self.value_or_offset.to_be_bytes().to_vec()
+                } else {
+                    buffer[self.value_or_offset as usize..self.value_or_offset as usize + bytes_per_value].to_vec()
+                };
+                EntryData::Single(DataType::get_entry_value(&buffer, self.data_type, 0, endian))
+            }
+        }    
+    }
+}
+
 struct DNG {
     image_file_header: ImageFileHeader,
-    ifds: HashMap<usize, IFD>
+    ifds: IFDs
 }
 
 impl DNG {
@@ -127,7 +256,7 @@ impl DNG {
 
     pub fn from_encoded_vec(encoded_image: Vec<u8>) -> Self {
         let image_file_header = ImageFileHeader::parse_image_header(&encoded_image);
-        let ifds = dng_utils::parse_ifds(&encoded_image, &image_file_header);
+        let ifds = IFDs::parse_ifds(&encoded_image, &image_file_header);
         Self {
             image_file_header,
             ifds,

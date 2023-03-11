@@ -25,106 +25,90 @@ pub(crate) fn get_word_size(buffer: &Vec<u8>, endian: &Endian) -> WordSize {
     }
 }
 
-pub(crate) fn parse_ifds(buffer: &Vec<u8>, image_file_header: &ImageFileHeader) -> HashMap<usize, IFD> {
-    let mut ifds = HashMap::new();
+// pub(crate) fn parse_ifds(buffer: &Vec<u8>, image_file_header: &ImageFileHeader) -> HashMap<usize, IFD> {
+//     let mut ifds = HashMap::new();
 
-    let mut offset = image_file_header.ifd_offset;
-    while offset > 0 {
-        let ifd = parse_ifd(buffer, &image_file_header.ifd_offset, &image_file_header.endian);
-        if let Some(entry) = ifd.entries.get(&(Tag::SubIFD as u16)) {
-            let ifd_offsets = get_entry_values(buffer, entry, &image_file_header.endian).to_vec().iter().map(|f| f.to_u32()).collect::<Vec<u32>>();
-            let sub_ifds = parse_ifd_tree(buffer, ifd_offsets, &image_file_header.endian);
-            ifds.extend(sub_ifds);
-        }
-        offset = ifd.next_ifd_offset;
-        ifds.insert(image_file_header.ifd_offset, ifd);
-    }
+//     let mut offset = image_file_header.ifd_offset;
+//     while offset > 0 {
+//         let ifd = parse_ifd(buffer, &image_file_header.ifd_offset, &image_file_header.endian);
+//         if let Some(entry) = ifd.entries.get(&(Tag::SubIFD as u16)) {
+//             let ifd_offsets = get_entry_values(buffer, entry, &image_file_header.endian).to_vec().iter().map(|f| f.to_u32()).collect::<Vec<u32>>();
+//             let sub_ifds = parse_ifd_tree(buffer, ifd_offsets, &image_file_header.endian);
+//             ifds.extend(sub_ifds);
+//         }
+//         offset = ifd.next_ifd_offset;
+//         ifds.insert(image_file_header.ifd_offset, ifd);
+//     }
 
-    ifds
-}
+//     ifds
+// }
 
-fn get_entry_values(buffer: &Vec<u8>, entry: &DirectoryEntry, endian: &Endian) -> EntryData {
-    let bytes_per_value = get_bytes_per_value_for_type(entry.data_type) as usize;
-    let total_used_bytes = bytes_per_value * entry.count;
-    match entry.count {
-        count if count > 1 => {
-            let mut values = Vec::with_capacity(entry.count as usize);
-            if total_used_bytes <= 4 {
-                for i in 0..entry.count {
-                    values.push(get_entry_value(&entry.value_or_offset.to_be_bytes().to_vec(), entry, i * bytes_per_value, &Endian::Big));
-                }
-            } else {
-                for i in 0..entry.count {
-                    values.push(get_entry_value(buffer, entry, entry.value_or_offset as usize + i * bytes_per_value, endian));
-                }
-            }
-            EntryData::Multiple(values)
-        },
-        count => {
-            EntryData::Single(DataType::Byte(8))
-        }
-    }    
-}
-
-fn get_entry_value(buffer: &Vec<u8>, entry: &DirectoryEntry, offset: usize, endian: &Endian) -> DataType {
-    use DataType::*;
-    match entry.data_type {
-        1 => Byte(get_value::byte(buffer, offset)),
-        2 => Ascii(get_value::ascii(buffer, offset)),
-        3 => Short(get_value::short(buffer, offset, endian)),
-        4 => Long(get_value::long(buffer, offset, endian)),
-        5 => Rational(get_value::rational(buffer, offset, endian)),
-        6 => Sbyte(get_value::sbyte(buffer, offset)),
-        7 => Undefined(get_value::undefined(buffer, offset)),
-        8 => Sshort(get_value::sshort(buffer, offset, endian)),
-        9 => Slong(get_value::slong(buffer, offset, endian)),
-        10 => Srational(get_value::rsational(buffer, offset, endian)),
-        11 => Float(get_value::float(buffer, offset, endian)),
-        12 => Double(get_value::double(buffer, offset, endian)),
-        _ => panic!("That datatype doesn't make sense!")
-    }
-}
+// fn get_entry_values(buffer: &Vec<u8>, entry: &DirectoryEntry, endian: &Endian) -> EntryData {
+//     let bytes_per_value = get_bytes_per_value_for_type(entry.data_type) as usize;
+//     let total_used_bytes = bytes_per_value * entry.count;
+//     match entry.count {
+//         count if count > 1 => {
+//             let mut values = Vec::with_capacity(entry.count as usize);
+//             if total_used_bytes <= 4 {
+//                 for i in 0..entry.count {
+//                     values.push(get_entry_value(&entry.value_or_offset.to_be_bytes().to_vec(), entry, i * bytes_per_value, &Endian::Big));
+//                 }
+//             } else {
+//                 for i in 0..entry.count {
+//                     values.push(get_entry_value(buffer, entry, entry.value_or_offset as usize + i * bytes_per_value, endian));
+//                 }
+//             }
+//             EntryData::Multiple(values)
+//         },
+//         count => {
+//             EntryData::Single(DataType::Byte(8))
+//         }
+//     }    
+// }
 
 
 
-fn parse_ifd_tree(buffer: &Vec<u8>, offsets: Vec<u32>, endian: &Endian) -> HashMap<usize, IFD> {
-    let mut ifds: HashMap<usize, IFD> = HashMap::new();
-    for i in offsets {
-        let ifd = parse_ifd(buffer, &(i as usize), endian);
-        if let Some(entry) = ifd.entries.get(&(Tag::SubIFD as u16)) {
-            let ifd_offsets = get_entry_values(buffer, entry, endian).to_vec().iter().map(|f| f.to_u32()).collect::<Vec<u32>>();
-            let sub_ifds = parse_ifd_tree(buffer, ifd_offsets, endian);
-            ifds.extend(sub_ifds);
-        }
-        ifds.insert(i as usize, ifd);
-    }
-    ifds
-}
 
-fn parse_ifd(buffer: &Vec<u8>, offset: &usize, endian: &Endian) -> IFD {
-    let entry_count = get_value::short(buffer, *offset, endian) as usize;    
-    let mut entries = HashMap::new();
-    for i in 0..entry_count {
-        let tag = get_value::short(buffer, offset + 2 + i * 12, endian);
-        let data_type = get_value::short(buffer, offset + 4 + i * 12, endian);
-        let count = get_value::long(buffer, offset + 6 + i * 12, endian) as usize;
-        let value_or_offset = get_value::long(buffer, offset + 10 + i * 12, endian);
 
-        entries.insert(tag.clone(), DirectoryEntry { tag, data_type: data_type, count, value_or_offset });
-    }
-    IFD {
-        numb_of_entries: entry_count as u16,
-        entries,
-        next_ifd_offset: get_value::long(buffer, offset + 2 + entry_count * 12, endian) as usize,
-    }
-}
+// fn parse_ifd_tree(buffer: &Vec<u8>, offsets: Vec<u32>, endian: &Endian) -> HashMap<usize, IFD> {
+//     let mut ifds: HashMap<usize, IFD> = HashMap::new();
+//     for i in offsets {
+//         let ifd = parse_ifd(buffer, &(i as usize), endian);
+//         if let Some(entry) = ifd.entries.get(&(Tag::SubIFD as u16)) {
+//             let ifd_offsets = get_entry_values(buffer, entry, endian).to_vec().iter().map(|f| f.to_u32()).collect::<Vec<u32>>();
+//             let sub_ifds = parse_ifd_tree(buffer, ifd_offsets, endian);
+//             ifds.extend(sub_ifds);
+//         }
+//         ifds.insert(i as usize, ifd);
+//     }
+//     ifds
+// }
+
+// fn parse_ifd(buffer: &Vec<u8>, offset: usize, endian: &Endian) -> IFD {
+//     let entry_count = get_value::short(buffer, offset, endian) as usize;    
+//     let mut entries = HashMap::new();
+//     for i in 0..entry_count {
+//         let tag = get_value::short(buffer, offset + 2 + i * 12, endian);
+//         let data_type = get_value::short(buffer, offset + 4 + i * 12, endian);
+//         let count = get_value::long(buffer, offset + 6 + i * 12, endian) as usize;
+//         let value_or_offset = get_value::long(buffer, offset + 10 + i * 12, endian);
+
+//         entries.insert(tag.clone(), DirectoryEntry { tag, data_type: data_type, count, value_or_offset });
+//     }
+//     assert_eq!(get_value::long(buffer, offset + 2 + entry_count * 12, endian) as usize, 0);
+//     IFD {
+//         offset,
+//         numb_of_entries: entry_count as u16,
+//         entries,
+//     }
+// }
 
 // fn get_entries_required_bytes(sub_ifd_entry: &DirectoryEntry) -> u32 {
 //     let bytes_per_count = get_bytes_per_value_for_type(sub_ifd_entry.data_type) as u32;
 //     bytes_per_count * sub_ifd_entry.count as u32
 // }
 
-fn get_bytes_per_value_for_type(data_type: u16) -> u16 {
+pub(crate) fn get_bytes_per_value_for_type(data_type: u16) -> u16 {
     match data_type {
         1 | 2 | 6 | 7 => 1,
         3 | 8 => 2,
