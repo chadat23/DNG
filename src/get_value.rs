@@ -11,8 +11,6 @@ pub(crate) fn ascii(buffer: &Vec<u8>, offset: usize) -> u8 {
 pub(crate) fn short(buffer: &Vec<u8>, offset: usize, endian: &Endian) -> u16 {
     let bytes = &buffer[offset..offset + 2];
 
-    let a = u16::from_be_bytes(bytes.try_into().unwrap());
-
     use Endian::*;
     match endian {
         Big => {

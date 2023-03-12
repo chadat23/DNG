@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, hash::Hash, iter::Zip};
 
 use crate::{ Endian, WordSize, ImageFileHeader, IFD, DirectoryEntry, tags::Tag, get_value, DataType, EntryData};
 
@@ -24,6 +24,16 @@ pub(crate) fn get_word_size(buffer: &Vec<u8>, endian: &Endian) -> WordSize {
         _ => panic!("Endian bytes aren't valid!!!")
     }
 }
+
+pub(crate) fn get_image_chunks(buffer: &Vec<u8>, offsets: &Vec<usize>, sizes: &Vec<usize>) -> Vec<Vec<u8>> {
+    let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(offsets.len());
+    for (offset, size) in offsets.iter().zip(sizes.iter()) {
+        chunks.push(buffer[*offset..offset + size].to_vec());
+    }
+    chunks
+}
+
+
 
 // pub(crate) fn parse_ifds(buffer: &Vec<u8>, image_file_header: &ImageFileHeader) -> HashMap<usize, IFD> {
 //     let mut ifds = HashMap::new();
@@ -108,15 +118,7 @@ pub(crate) fn get_word_size(buffer: &Vec<u8>, endian: &Endian) -> WordSize {
 //     bytes_per_count * sub_ifd_entry.count as u32
 // }
 
-pub(crate) fn get_bytes_per_value_for_type(data_type: u16) -> u16 {
-    match data_type {
-        1 | 2 | 6 | 7 => 1,
-        3 | 8 => 2,
-        4 | 9 | 11 => 4,
-        5 | 10 | 12 => 8,
-        _ => panic!("Received an invalid Directory Entry Type")
-    }
-}
+
 
 // #[cfg(test)]
 // mod tests {
